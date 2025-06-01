@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
 
 void main() => runApp(ProdutoApp());
 
@@ -14,6 +16,7 @@ class ProdutoApp extends StatelessWidget {
 
 // Modelo de Produto
 class Produto {
+  final int? id;
   final String nome;
   final double precoCompra;
   final double precoVenda;
@@ -26,6 +29,7 @@ class Produto {
   final double desconto;
 
   Produto({
+    this.id,
     required this.nome,
     required this.precoCompra,
     required this.precoVenda,
@@ -37,6 +41,102 @@ class Produto {
     required this.emPromocao,
     required this.desconto,
   });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'nome': nome,
+      'precoCompra': precoCompra,
+      'precoVenda': precoVenda,
+      'quantidade': quantidade,
+      'descricao': descricao,
+      'categoria': categoria,
+      'imagemUrl': imagemUrl,
+      'ativo': ativo ? 1 : 0,
+      'emPromocao': emPromocao ? 1 : 0,
+      'desconto': desconto,
+    };
+  }
+
+  factory Produto.fromMap(Map<String, dynamic> map) {
+    return Produto(
+      id: map['id'],
+      nome: map['nome'],
+      precoCompra: map['precoCompra'],
+      precoVenda: map['precoVenda'],
+      quantidade: map['quantidade'],
+      descricao: map['descricao'],
+      categoria: map['categoria'],
+      imagemUrl: map['imagemUrl'],
+      ativo: map['ativo'] == 1,
+      emPromocao: map['emPromocao'] == 1,
+      desconto: map['desconto'],
+    );
+  }
+}
+
+// Banco de dados
+class ProdutoDatabase {
+  static final ProdutoDatabase _instance = ProdutoDatabase._internal();
+  factory ProdutoDatabase() => _instance;
+  ProdutoDatabase._internal();
+
+  Database? _database;
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDatabase();
+    return _database!;
+  }
+
+  Future<Database> _initDatabase() async {
+    String dbPath = await getDatabasesPath();
+    String path = join(dbPath, 'produtos.db');
+
+    return await openDatabase(
+      path,
+      version: 1,
+      onCreate: _onCreate,
+    );
+  }
+
+  Future _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE produtos(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT,
+        precoCompra REAL,
+        precoVenda REAL,
+        quantidade INTEGER,
+        descricao TEXT,
+        categoria TEXT,
+        imagemUrl TEXT,
+        ativo INTEGER,
+        emPromocao INTEGER,
+        desconto REAL
+      )
+    ''');
+  }
+
+  Future<int> insertProduto(Produto produto) async {
+    final db = await database;
+    return await db.insert('produtos', produto.toMap());
+  }
+
+  Future<List<Produto>> getProdutos() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query('produtos');
+    return List.generate(maps.length, (i) => Produto.fromMap(maps[i]));
+  }
+
+  Future<int> deleteProduto(int id) async {
+    final db = await database;
+    return await db.delete(
+      'produtos',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
 }
 
 // Tela de Cadastro
@@ -61,9 +161,8 @@ class _CadastroProdutoScreenState extends State<CadastroProdutoScreen> {
   double _desconto = 0;
 
   final List<String> _categorias = ['Eletrônico', 'Alimento', 'Roupas', 'Outros'];
-  final List<Produto> produtos = [];
 
-  void _cadastrarProduto() {
+  Future<void> _cadastrarProduto() async {
     if (_formKey.currentState!.validate()) {
       final novoProduto = Produto(
         nome: _nomeController.text,
@@ -78,13 +177,11 @@ class _CadastroProdutoScreenState extends State<CadastroProdutoScreen> {
         desconto: _desconto,
       );
 
-      produtos.add(novoProduto);
+      await ProdutoDatabase().insertProduto(novoProduto);
 
       Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (context) => ListaProdutosScreen(produtos: produtos),
-        ),
+        MaterialPageRoute(builder: (context) => ListaProdutosScreen()),
       );
     }
   }
@@ -149,7 +246,8 @@ class _CadastroProdutoScreenState extends State<CadastroProdutoScreen> {
                   : Image.network(
                       _imagemUrlController.text,
                       height: 100,
-                      errorBuilder: (context, error, stackTrace) => Text('Erro ao carregar imagem'),
+                      errorBuilder: (context, error, stackTrace) =>
+                          Text('Erro ao carregar imagem'),
                     ),
               SwitchListTile(
                 title: Text('Produto Ativo'),
@@ -185,34 +283,53 @@ class _CadastroProdutoScreenState extends State<CadastroProdutoScreen> {
 
 // Tela de Lista de Produtos
 class ListaProdutosScreen extends StatelessWidget {
-  final List<Produto> produtos;
-
-  ListaProdutosScreen({required this.produtos});
+  final ProdutoDatabase dbHelper = ProdutoDatabase();
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Lista de Produtos')),
-      body: ListView.builder(
-        itemCount: produtos.length,
-        itemBuilder: (context, index) {
-          final produto = produtos[index];
-          return ListTile(
-            leading: Image.network(
-              produto.imagemUrl,
-              width: 50,
-              height: 50,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => Icon(Icons.image_not_supported),
-            ),
-            title: Text(produto.nome),
-            subtitle: Text('R\$ ${produto.precoVenda.toStringAsFixed(2)}'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => DetalhesProdutoScreen(produto: produto),
+      body: FutureBuilder<List<Produto>>(
+        future: dbHelper.getProdutos(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Center(child: CircularProgressIndicator());
+          }
+          final produtos = snapshot.data ?? [];
+          return ListView.builder(
+            itemCount: produtos.length,
+            itemBuilder: (context, index) {
+              final produto = produtos[index];
+              return ListTile(
+                leading: Image.network(
+                  produto.imagemUrl,
+                  width: 50,
+                  height: 50,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) =>
+                      Icon(Icons.image_not_supported),
                 ),
+                title: Text(produto.nome),
+                subtitle: Text('R\$ ${produto.precoVenda.toStringAsFixed(2)}'),
+                trailing: IconButton(
+                  icon: Icon(Icons.delete, color: Colors.red),
+                  onPressed: () async {
+                    await dbHelper.deleteProduto(produto.id!);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Produto excluído com sucesso!')),
+                    );
+                    (context as Element).reassemble();
+                  },
+                ),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          DetalhesProdutoScreen(produto: produto),
+                    ),
+                  );
+                },
               );
             },
           );
@@ -278,7 +395,8 @@ class DetalhesProdutoScreen extends StatelessWidget {
                 style: TextStyle(fontSize: 16)),
             Text('Preço de Venda: R\$ ${produto.precoVenda.toStringAsFixed(2)}',
                 style: TextStyle(fontSize: 16)),
-            Text('Quantidade: ${produto.quantidade}', style: TextStyle(fontSize: 16)),
+            Text('Quantidade: ${produto.quantidade}',
+                style: TextStyle(fontSize: 16)),
             Text('Desconto: ${produto.desconto.toStringAsFixed(0)}%',
                 style: TextStyle(fontSize: 16)),
           ],
